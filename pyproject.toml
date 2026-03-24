@@ -64,9 +64,9 @@ lint = [
 local-first-todo = "local_first_todo.main:main"
 
 [project.urls]
-Homepage = "https://github.com/example/local-first-todo"
-Repository = "https://github.com/example/local-first-todo"
-Issues = "https://github.com/example/local-first-todo/issues"
+Homepage = "https://github.com/Soluna-Angelito/local-first-todo"
+Repository = "https://github.com/Soluna-Angelito/local-first-todo"
+Issues = "https://github.com/Soluna-Angelito/local-first-todo/issues"
 
 # Tool configurations
 [tool.ruff]

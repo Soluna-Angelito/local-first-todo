@@ -42,7 +42,21 @@ full-text search, file attachments, and persistent undo/redo — all running loc
 
 ## Overview
 
-**Soy Lunita** is a local-first task management application designed for users who prioritize data sovereignty and offline capability. Unlike cloud-based alternatives, all data stays on your machine in a single SQLite database — no accounts, no telemetry, no internet required.
+**Soy Lunita** is a personal local-first task manager built for environments where cloud tools are not a good fit, especially offline or air-gapped workflows.
+
+It exists because I wanted a task manager that stays entirely on the local machine, supports deep task hierarchies, handles attachments, and does not depend on external services.
+
+All task data lives in a local SQLite database. There are no accounts, no telemetry, and no network dependency for normal use.
+
+## Project Status
+
+This repository is published as a personal project and reference implementation.
+
+- Primary goal: solve my own workflow in restricted environments
+- Current state: usable, but still evolving
+- Scope: single-user local application, not a hosted multi-user product
+
+If you are looking for a polished general-purpose task manager, this repository is probably not that. If you need a local-first reference project or something close to an air-gapped personal task manager, it may still be useful.
 
 ### Who is this for?
 
@@ -53,7 +67,7 @@ full-text search, file attachments, and persistent undo/redo — all running loc
 | **Security-sensitive workflows** | No data exfiltration surface; ideal for classified contexts |
 | **Power users** | Keyboard-first design, infinite nesting, Markdown descriptions |
 
-The application features an aurora-inspired dark UI with parallax star backgrounds, Markdown rendering with LaTeX math and syntax highlighting, and real-time multi-tab synchronization via WebSockets.
+The application includes a custom dark UI, Markdown rendering, syntax highlighting, and real-time browser-tab synchronization via WebSockets.
 
 ---
 
@@ -191,7 +205,7 @@ Schema versioning is managed through `SCHEMA_VERSION` with incremental migration
 ### Clone the Repository
 
 ```bash
-git clone https://github.com/your-username/local-first-todo.git
+git clone https://github.com/Soluna-Angelito/local-first-todo.git
 cd local-first-todo
 ```
 

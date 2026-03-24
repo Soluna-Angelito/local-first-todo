@@ -168,7 +168,7 @@ Errors follow [RFC 7807](https://tools.ietf.org/html/rfc7807) Problem Details fo
         },
         contact={
             "name": "Local-First To-Do",
-            "url": "https://github.com/local-first-todo",
+            "url": "https://github.com/Soluna-Angelito/local-first-todo",
         },
     )
     
