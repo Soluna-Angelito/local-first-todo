@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Soy Lunita - Beautiful infinite tree task manager with aurora-inspired design">
+  <meta name="theme-color" content="#030308">
+  <title>Soy Lunita — Infinite Tree Tasks</title>
+
+  <!-- Local Fonts - Bricolage Grotesque (Display), Plus Jakarta Sans (Body), IBM Plex Mono (Code) -->
+  <link rel="stylesheet" href="/static/fonts/fonts.css">
+
+  <!-- Lucide Icons (local) -->
+  <script src="/static/js/vendor/lucide.min.js"></script>
+
+  <!-- Marked.js for Markdown rendering -->
+  <script src="/static/js/vendor/marked.min.js"></script>
+
+  <!-- KaTeX for LaTeX math rendering -->
+  <link rel="stylesheet" href="/static/css/katex.min.css">
+  <script src="/static/js/vendor/katex.min.js"></script>
+  <script src="/static/js/vendor/katex-auto-render.min.js"></script>
+
+  <!-- Highlight.js for syntax highlighting -->
+  <link rel="stylesheet" href="/static/css/atom-one-dark.css">
+  <!-- <link rel="stylesheet" href="/static/css/tokyo-night-dark.css"> -->
+  <!-- <link rel="stylesheet" href="/static/css/github-dark.css"> -->
+  <script src="/static/js/vendor/highlight.min.js"></script>
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="/static/css/app.css">
+
+  <!-- Favicon -->
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text x='50' y='50' dominant-baseline='central' text-anchor='middle' font-size='80'>🌙</text></svg>">
+</head>
+
+<body>
+  <!-- SVG Definitions for gradients -->
+  <svg width="0" height="0" style="position: absolute;">
+    <defs>
+      <!-- Aurora gradient for progress ring -->
+      <linearGradient id="gradient-ring" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" style="stop-color:#00f5d4" />
+        <stop offset="50%" style="stop-color:#9b5de5" />
+        <stop offset="100%" style="stop-color:#f15bb5" />
+      </linearGradient>
+
+      <!-- Aurora gradient for other SVG elements -->
+      <linearGradient id="gradient-aurora" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" style="stop-color:#00f5d4" />
+        <stop offset="33%" style="stop-color:#00bbf9" />
+        <stop offset="66%" style="stop-color:#9b5de5" />
+        <stop offset="100%" style="stop-color:#f15bb5" />
+      </linearGradient>
+
+      <!-- Glow filter -->
+      <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur stdDeviation="3" result="coloredBlur" />
+        <feMerge>
+          <feMergeNode in="coloredBlur" />
+          <feMergeNode in="SourceGraphic" />
+        </feMerge>
+      </filter>
+    </defs>
+  </svg>
+
+  <div class="app" id="app">
+    <!-- Parallax star background -->
+    <div id="stars"></div>
+    <div id="stars2"></div>
+    <div id="stars3"></div>
+
+    <!-- Main container -->
+    <div class="app-container">
+      <!-- Header -->
+      <header class="app-header">
+        <div class="header-brand">
+          <div class="logo">
+            <i data-lucide="moon" class="logo-icon"></i>
+          </div>
+          <div class="brand-text">
+            <h1>Soy Lunita</h1>
+            <p class="tagline">Infinite Tree Tasks</p>
+          </div>
+        </div>
+
+        <div class="header-stats" id="header-stats">
+          <div class="stat-ring">
+            <svg viewBox="0 0 36 36" class="circular-chart" overflow="visible">
+              <path class="circle-bg" d="M18 2.0845
+                  a 15.9155 15.9155 0 0 1 0 31.831
+                  a 15.9155 15.9155 0 0 1 0 -31.831" />
+              <path class="circle" id="progress-circle" stroke-dasharray="0, 100" d="M18 2.0845
+                  a 15.9155 15.9155 0 0 1 0 31.831
+                  a 15.9155 15.9155 0 0 1 0 -31.831" />
+            </svg>
+            <div class="stat-text">
+              <span class="stat-number" id="stat-percentage">0%</span>
+            </div>
+          </div>
+          <div class="stat-details">
+            <span class="stat-completed" id="stat-completed">0 done</span>
+            <span class="stat-total" id="stat-total">of 0 tasks</span>
+          </div>
+        </div>
+
+        <div class="header-controls">
+          <!-- Connection status -->
+          <div class="connection-status" id="connection-status" title="Disconnected">
+            <i data-lucide="wifi-off"></i>
+          </div>
+
+          <!-- Search -->
+          <div class="search-container">
+            <input type="text" id="search-input" class="search-input" placeholder="Search tasks... (/)">
+            <i data-lucide="search" class="search-icon"></i>
+            <button class="search-clear" id="search-clear" style="display: none;">
+              <i data-lucide="x"></i>
+            </button>
+          </div>
+
+        </div>
+
+        <div class="header-actions">
+          <!-- Filter dropdown -->
+          <div class="filter-dropdown">
+            <button class="filter-btn" id="filter-btn">
+              <i data-lucide="filter"></i>
+              <span id="filter-label">All</span>
+              <i data-lucide="chevron-down" class="filter-chevron"></i>
+            </button>
+            <div class="filter-menu" id="filter-menu">
+              <button class="filter-option active" data-filter="all">
+                All Tasks
+              </button>
+              <button class="filter-option" data-filter="active">
+                Active
+              </button>
+              <button class="filter-option" data-filter="completed">
+                Completed
+              </button>
+              <button class="filter-option" data-filter="pending">
+                Pending
+              </button>
+              <button class="filter-option" data-filter="in_progress">
+                In Progress
+              </button>
+              <button class="filter-option" data-filter="deferred">
+                Deferred
+              </button>
+            </div>
+          </div>
+          <button class="header-btn" id="expand-all-btn" title="Expand all (E)">
+            <i data-lucide="chevrons-down"></i>
+            <span>Expand</span>
+          </button>
+          <button class="header-btn" id="collapse-all-btn" title="Collapse all (C)">
+            <i data-lucide="chevrons-up"></i>
+            <span>Collapse</span>
+          </button>
+          <button class="header-btn" id="undo-btn" title="Undo (Ctrl+Z)" disabled>
+            <i data-lucide="undo-2"></i>
+          </button>
+          <button class="header-btn" id="redo-btn" title="Redo (Ctrl+Y)" disabled>
+            <i data-lucide="redo-2"></i>
+          </button>
+        </div>
+      </header>
+
+      <!-- Main content -->
+      <main class="app-main">
+        <!-- Task tree frame (allows glow overflow) -->
+        <div class="todo-frame">
+          <!-- Task tree scroller (handles scrolling) -->
+          <div class="todo-tree" id="todo-tree">
+            <!-- Loading state -->
+            <div class="loading-state" id="loading-state">
+              <div class="loading-spinner"></div>
+              <p>Loading your tasks...</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Add new task button/form -->
+        <div class="add-task-container" id="add-task-container">
+          <button class="add-task-btn" id="add-task-btn">
+            <i data-lucide="plus"></i>
+            <span>Add new task (N)</span>
+          </button>
+        </div>
+      </main>
+
+      <!-- Footer -->
+      <footer class="app-footer">
+        <p>
+          <i data-lucide="sparkles"></i>
+          Press <kbd>?</kbd> for shortcuts • Click title to edit • Use <kbd>+</kbd> to add subtasks
+        </p>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Task Detail Modal -->
+  <div class="modal-overlay" id="task-modal" style="display: none;">
+    <div class="modal-container">
+      <div class="modal-header">
+        <div class="modal-title-section">
+          <button class="modal-status-btn" id="modal-status-btn" title="Toggle completion">
+            <i data-lucide="circle"></i>
+          </button>
+          <input type="text" class="modal-title-input" id="modal-title" placeholder="Task title..." autocomplete="off">
+        </div>
+        <button class="modal-close" id="modal-close">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Two-column layout: All fields (left) + Description (right) -->
+        <div class="modal-two-column">
+          <!-- Left column: All fields except description -->
+          <div class="modal-left-column">
+            <!-- Status and Priority row -->
+            <div class="modal-row">
+              <div class="modal-field">
+                <label><i data-lucide="loader"></i> Status</label>
+                <select id="modal-status-select" class="modal-select">
+                  <option value="pending">Pending</option>
+                  <option value="in_progress">In Progress</option>
+                  <option value="completed">Completed</option>
+                  <option value="deferred">Deferred</option>
+                </select>
+              </div>
+              <div class="modal-field">
+                <label><i data-lucide="flag"></i> Priority</label>
+                <select id="modal-priority" class="modal-select">
+                  <option value="">None</option>
+                  <option value="4">🔵 Low</option>
+                  <option value="3">🟡 Medium</option>
+                  <option value="2">🟠 High</option>
+                  <option value="1">🔴 Urgent</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Due Date with Custom Date Picker -->
+            <div class="modal-field">
+              <label><i data-lucide="calendar"></i> Due Date</label>
+              <div class="date-picker-container">
+                <div class="date-input-wrapper">
+                  <input type="text" id="modal-due-date" class="modal-input date-input" placeholder="YYYY-MM-DD"
+                    autocomplete="off">
+                  <button type="button" class="calendar-trigger" id="calendar-trigger" title="Select date">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                      stroke-linejoin="round">
+                      <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                      <line x1="16" y1="2" x2="16" y2="6"></line>
+                      <line x1="8" y1="2" x2="8" y2="6"></line>
+                      <line x1="3" y1="10" x2="21" y2="10"></line>
+                    </svg>
+                  </button>
+                </div>
+                <button type="button" class="clear-date-btn" id="clear-date-btn" title="Clear date">
+                  <i data-lucide="x"></i>
+                </button>
+              </div>
+            </div>
+
+            <!-- Subtasks section -->
+            <div class="modal-section">
+              <div class="modal-section-header">
+                <label><i data-lucide="list-tree"></i> Subtasks</label>
+                <button class="modal-section-btn" id="add-subtask-btn">
+                  <i data-lucide="plus"></i> Add subtask
+                </button>
+              </div>
+              <div class="subtasks-list" id="modal-subtasks"></div>
+            </div>
+
+            <!-- Attachments section -->
+            <div class="modal-section">
+              <div class="modal-section-header">
+                <label><i data-lucide="paperclip"></i> Attachments</label>
+                <label class="modal-section-btn upload-btn">
+                  <i data-lucide="upload"></i> Upload
+                  <input type="file" id="file-upload" style="display: none;" multiple>
+                </label>
+              </div>
+              <div class="attachments-list" id="modal-attachments"></div>
+            </div>
+
+            <!-- Metadata -->
+            <div class="modal-metadata">
+              <span id="modal-created"></span>
+              <span id="modal-updated"></span>
+            </div>
+          </div>
+
+          <!-- Right column: Description only (full height) -->
+          <div class="modal-right-column">
+            <div class="description-header">
+              <label><i data-lucide="align-left"></i> Description</label>
+              <button type="button" class="description-toggle-btn" id="description-toggle-btn" title="Toggle view/edit mode">
+                <i data-lucide="eye" id="description-toggle-icon"></i>
+                <span id="description-toggle-label">View</span>
+              </button>
+            </div>
+            <div class="description-container">
+              <!-- Edit mode: textarea -->
+              <textarea id="modal-description" class="modal-textarea modal-textarea-full" placeholder="Add a description... (Supports Markdown and LaTeX: $x^2$)"></textarea>
+              <!-- View mode: rendered markdown -->
+              <div id="modal-description-view" class="description-view markdown-body" style="display: none;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-danger" id="modal-delete">
+          <i data-lucide="trash-2"></i> Delete
+        </button>
+        <div class="modal-footer-right">
+          <button class="btn btn-ghost" id="modal-cancel">Cancel</button>
+          <button class="btn btn-primary" id="modal-save">
+            <i data-lucide="check"></i><span>Save Changes</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Keyboard Shortcuts Modal -->
+  <div class="modal-overlay shortcuts-modal" id="shortcuts-modal" style="display: none;">
+    <div class="shortcuts-container">
+      <div class="shortcuts-header">
+        <h2><i data-lucide="keyboard"></i> Keyboard Shortcuts</h2>
+        <button class="modal-close" id="shortcuts-close">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="shortcuts-grid">
+        <div class="shortcut-group">
+          <h3>Navigation</h3>
+          <div class="shortcut"><kbd>/</kbd><span>Focus search</span></div>
+          <div class="shortcut"><kbd>↑</kbd> <kbd>↓</kbd><span>Navigate tasks</span></div>
+          <div class="shortcut"><kbd>←</kbd> <kbd>→</kbd><span>Collapse / Expand</span></div>
+          <div class="shortcut"><kbd>Enter</kbd><span>Open task details</span></div>
+          <div class="shortcut"><kbd>Esc</kbd><span>Close / Cancel</span></div>
+        </div>
+        <div class="shortcut-group">
+          <h3>Actions</h3>
+          <div class="shortcut"><kbd>N</kbd><span>New task</span></div>
+          <div class="shortcut"><kbd>+</kbd><span>Add subtask (selected)</span></div>
+          <div class="shortcut"><kbd>Space</kbd><span>Toggle completion</span></div>
+          <div class="shortcut"><kbd>Delete</kbd><span>Delete task</span></div>
+        </div>
+        <div class="shortcut-group">
+          <h3>Edit</h3>
+          <div class="shortcut"><kbd>Ctrl</kbd>+<kbd>Z</kbd><span>Undo</span></div>
+          <div class="shortcut"><kbd>Ctrl</kbd>+<kbd>Y</kbd><span>Redo</span></div>
+          <div class="shortcut"><kbd>E</kbd><span>Expand all</span></div>
+          <div class="shortcut"><kbd>C</kbd><span>Collapse all</span></div>
+          <div class="shortcut"><kbd>?</kbd><span>Show this help</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast notifications container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Custom Confirmation Modal -->
+  <div class="modal-overlay confirm-modal" id="confirm-modal" style="display: none;">
+    <div class="confirm-container">
+      <div class="confirm-icon" id="confirm-icon">
+        <i data-lucide="alert-triangle"></i>
+      </div>
+      <h3 class="confirm-title" id="confirm-title">Confirm Action</h3>
+      <p class="confirm-message" id="confirm-message">Are you sure you want to proceed?</p>
+      <div class="confirm-actions">
+        <button class="btn btn-ghost" id="confirm-cancel">Cancel</button>
+        <button class="btn btn-danger" id="confirm-ok">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Calendar Popup Backdrop -->
+  <div class="calendar-backdrop" id="calendar-backdrop"></div>
+
+  <!-- Calendar Popup -->
+  <div class="calendar-popup" id="calendar-popup">
+    <div class="calendar-header">
+      <button type="button" class="calendar-nav-btn" id="prev-month" title="Previous month">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+          stroke-linejoin="round">
+          <polyline points="15 18 9 12 15 6"></polyline>
+        </svg>
+      </button>
+      <button type="button" class="calendar-month-year-btn" id="calendar-month-year" title="Select month/year"></button>
+      <button type="button" class="calendar-nav-btn" id="next-month" title="Next month">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+          stroke-linejoin="round">
+          <polyline points="9 18 15 12 9 6"></polyline>
+        </svg>
+      </button>
+    </div>
+    <!-- Month/Year Selection Panel -->
+    <div class="calendar-selection-panel" id="calendar-selection-panel" style="display: none;">
+      <div class="calendar-year-nav">
+        <button type="button" class="calendar-nav-btn" id="prev-year-range" title="Previous years">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+        </button>
+        <span class="calendar-year-range" id="calendar-year-range"></span>
+        <button type="button" class="calendar-nav-btn" id="next-year-range" title="Next years">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round">
+            <polyline points="9 18 15 12 9 6"></polyline>
+          </svg>
+        </button>
+      </div>
+      <div class="calendar-year-grid" id="calendar-year-grid">
+        <!-- Years generated by JavaScript -->
+      </div>
+      <div class="calendar-month-grid" id="calendar-month-grid">
+        <!-- Months generated by JavaScript -->
+      </div>
+    </div>
+    <div class="calendar-grid" id="calendar-grid">
+      <!-- Calendar days generated by JavaScript -->
+    </div>
+    <div class="calendar-footer">
+      <button type="button" class="calendar-today-btn" id="calendar-today-btn">Today</button>
+    </div>
+  </div>
+
+  <!-- Generate random stars based on screen size -->
+  <script>
+    (function () {
+      function generateStars(count, width, height) {
+        let shadows = [];
+        for (let i = 0; i < count; i++) {
+          const x = Math.floor(Math.random() * width);
+          const y = Math.floor(Math.random() * height);
+          shadows.push(`${x}px ${y}px #FFF`);
+        }
+        return shadows.join(', ');
+      }
+
+      function initStars() {
+        // Use screen dimensions (with some extra for seamless looping)
+        const width = window.innerWidth;
+        const height = window.innerHeight;
+
+        // Set CSS variable for animation distance
+        document.documentElement.style.setProperty('--star-field-height', `${height}px`);
+
+        // Generate stars for each layer
+        const stars1 = document.getElementById('stars');
+        const stars2 = document.getElementById('stars2');
+        const stars3 = document.getElementById('stars3');
+
+        if (stars1) stars1.style.boxShadow = generateStars(700, width, height);
+        if (stars2) stars2.style.boxShadow = generateStars(200, width, height);
+        if (stars3) stars3.style.boxShadow = generateStars(100, width, height);
+      }
+
+      // Initialize on load
+      initStars();
+
+      // Regenerate on resize (debounced)
+      let resizeTimeout;
+      window.addEventListener('resize', function () {
+        clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(initStars, 250);
+      });
+    })();
+  </script>
+
+  <!-- App Script -->
+  <script src="/static/js/app.js"></script>
+</body>
+
+</html>

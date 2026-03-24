@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local-First To-Do</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f8f9fa;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .api-links {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            margin-bottom: 40px;
+        }
+
+        .api-link {
+            display: inline-block;
+            padding: 12px 24px;
+            background-color: #007bff;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            transition: background-color 0.2s;
+        }
+
+        .api-link:hover {
+            background-color: #0056b3;
+        }
+
+        .info {
+            background-color: #e9ecef;
+            padding: 20px;
+            border-radius: 6px;
+            margin-bottom: 30px;
+        }
+
+        .status {
+            text-align: center;
+            color: #6c757d;
+            font-style: italic;
+        }
+
+        .coming-soon {
+            text-align: center;
+            padding: 40px;
+            color: #6c757d;
+            background-color: #f8f9fa;
+            border-radius: 6px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>Local-First To-Do Application</h1>
+
+        <div class="api-links">
+            <a href="/api/docs" class="api-link">API Documentation (Swagger)</a>
+            <a href="/api/redoc" class="api-link">API Documentation (ReDoc)</a>
+            <a href="/health" class="api-link">Health Check</a>
+        </div>
+
+        <div class="info">
+            <h3>Application Status</h3>
+            <p>The backend API is running and ready to serve requests. You can explore the full API documentation using
+                the links above.</p>
+        </div>
+
+        <div class="coming-soon">
+            <h2>Frontend UI Coming Soon</h2>
+            <p>The frontend interface is being rebuilt from scratch. The API remains fully functional.</p>
+        </div>
+
+        <div class="status">
+            <p>Local-First To-Do v1.0 • Backend Ready • Frontend in Development</p>
+        </div>
+    </div>
+</body>
+
+</html>

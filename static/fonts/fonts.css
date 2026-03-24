@@ -1,0 +1,65 @@
+/* ============================================
+   Local Font Definitions
+   Bricolage Grotesque, Plus Jakarta Sans, IBM Plex Mono
+   Pretendard (Korean)
+   ============================================ */
+
+/* Pretendard - Korean Variable Font */
+@font-face {
+  font-family: 'Pretendard';
+  src: url('./pretendard/PretendardVariable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Bricolage Grotesque - Variable Font */
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  src: url('./bricolage-grotesque/BricolageGrotesque-VariableFont_opsz,wdth,wght.ttf') format('truetype');
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Plus Jakarta Sans - Variable Font */
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  src: url('./plus-jakarta-sans/PlusJakartaSans-VariableFont_wght.ttf') format('truetype');
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Plus Jakarta Sans';
+  src: url('./plus-jakarta-sans/PlusJakartaSans-Italic-VariableFont_wght.ttf') format('truetype');
+  font-weight: 200 800;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* IBM Plex Mono */
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('./ibm-plex-mono/IBMPlexMono-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('./ibm-plex-mono/IBMPlexMono-Medium.ttf') format('truetype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('./ibm-plex-mono/IBMPlexMono-SemiBold.ttf') format('truetype');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
