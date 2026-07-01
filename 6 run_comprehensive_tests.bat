@@ -24,6 +24,10 @@ call .venv\Scripts\activate.bat
 REM Ensure src-layout package imports work
 set PYTHONPATH=%CD%\src;%PYTHONPATH%
 
+REM Force UTF-8 output: conftest.py prints unicode symbols that crash
+REM under legacy console codepages (e.g. cp949 on Korean Windows)
+set PYTHONUTF8=1
+
 REM Set UTF-8 encoding for Python
 set PYTHONIOENCODING=utf-8
 

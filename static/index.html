@@ -29,7 +29,9 @@
   <script src="/static/js/vendor/highlight.min.js"></script>
 
   <!-- Styles -->
-  <link rel="stylesheet" href="/static/css/app.css">
+  <!-- ?v= cache-buster: bump when app.css/app.js change so browsers on other
+       machines don't keep serving a stale cached copy -->
+  <link rel="stylesheet" href="/static/css/app.css?v=20260611">
 
   <!-- Favicon -->
   <link rel="icon"
@@ -481,8 +483,8 @@
     })();
   </script>
 
-  <!-- App Script -->
-  <script src="/static/js/app.js"></script>
+  <!-- App Script (?v= cache-buster, keep in sync with app.css above) -->
+  <script src="/static/js/app.js?v=20260611"></script>
 </body>
 
 </html>

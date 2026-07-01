@@ -8,7 +8,7 @@ This module provides REST API endpoints for advanced search functionality includ
 """
 
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel, Field

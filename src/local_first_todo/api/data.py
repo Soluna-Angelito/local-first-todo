@@ -8,11 +8,9 @@ This module provides REST API endpoints for:
 """
 
 import logging
-from typing import Optional, Dict, Any
-from datetime import datetime, timezone
+from typing import Dict, Any
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Query
-from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from local_first_todo.dependencies import get_database_manager, get_task_repository
@@ -231,9 +229,11 @@ async def get_sync_delta(
         # 3. Include task hierarchy changes
         # 4. Handle revision gaps and resets
         
-        # Get all tasks to determine current revision
-        all_tasks = await task_repository.get_all_tasks()
-        current_revision = max((task.revision for task in all_tasks), default=0)
+        # Determine current revision without loading the whole table
+        rows = await task_repository.db_manager.execute_read(
+            "SELECT COALESCE(MAX(revision), 0) as max_revision FROM Task"
+        )
+        current_revision = rows[0]["max_revision"] if rows else 0
         
         # Mock changes response
         changes = []

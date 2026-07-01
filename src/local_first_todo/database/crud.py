@@ -11,7 +11,7 @@ from typing import List, Optional, Dict, Any
 import aiosqlite
 
 from local_first_todo.database.manager import DatabaseManager
-from local_first_todo.database.models import Task, TaskStatus, TaskClosure
+from local_first_todo.database.models import Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -43,43 +43,73 @@ class TaskRepository:
         if not task.created_at:
             task.created_at = now
         
-        operations = []
-        
-        # Insert the task
-        task_insert = (
-            """
-            INSERT INTO Task (
-                uuid, revision, title, description, recurrence_rrule,
-                recurrence_start_utc, next_due_utc, status, priority,
-                created_at, updated_at, deleted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                task.uuid, task.revision, task.title, task.description,
-                task.recurrence_rrule, task.recurrence_start_utc, task.next_due_utc,
-                task.status.value, task.priority, task.created_at, task.updated_at,
-                task.deleted_at
+        # Insert the task row and its closure entries atomically so a failure
+        # cannot leave a task without hierarchy entries (invisible in tree APIs)
+        async with self.db_manager.transaction() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO Task (
+                    uuid, revision, title, description, recurrence_rrule,
+                    recurrence_start_utc, next_due_utc, status, priority,
+                    created_at, updated_at, deleted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task.uuid, task.revision, task.title, task.description,
+                    task.recurrence_rrule, task.recurrence_start_utc, task.next_due_utc,
+                    task.status.value, task.priority, task.created_at, task.updated_at,
+                    task.deleted_at
+                )
             )
-        )
-        operations.append(task_insert)
+            task_id = cursor.lastrowid
+            
+            if parent_id is not None:
+                # Self-reference for the new task
+                await conn.execute(
+                    "INSERT OR IGNORE INTO TaskClosure (ancestor_id, descendant_id, depth, sort_order) VALUES (?, ?, 0, 0)",
+                    (task_id, task_id)
+                )
+                
+                # Next sort_order among the parent's children
+                cursor = await conn.execute(
+                    "SELECT COALESCE(MAX(sort_order), 0) + 1 as next_sort_order FROM TaskClosure WHERE ancestor_id = ? AND depth = 1",
+                    (parent_id,)
+                )
+                row = await cursor.fetchone()
+                next_sort_order = row["next_sort_order"] if row else 1
+                
+                # Link to parent and all of the parent's ancestors
+                await conn.execute(
+                    """
+                    INSERT INTO TaskClosure (ancestor_id, descendant_id, depth, sort_order)
+                    SELECT ancestor_id, ?, depth + 1, CASE WHEN depth = 0 THEN ? ELSE 0 END
+                    FROM TaskClosure
+                    WHERE descendant_id = ?
+                    """,
+                    (task_id, next_sort_order, parent_id)
+                )
+            else:
+                # Root task: self-reference carries the root-level sort_order
+                cursor = await conn.execute(
+                    """
+                    SELECT COALESCE(MAX(tc.sort_order), 0) + 1 as next_sort_order
+                    FROM TaskClosure tc
+                    WHERE tc.depth = 0 AND tc.ancestor_id = tc.descendant_id
+                    AND NOT EXISTS (
+                        SELECT 1 FROM TaskClosure tc2 
+                        WHERE tc2.descendant_id = tc.descendant_id AND tc2.depth = 1
+                    )
+                    """
+                )
+                row = await cursor.fetchone()
+                next_sort_order = row["next_sort_order"] if row else 1
+                
+                await conn.execute(
+                    "INSERT OR IGNORE INTO TaskClosure (ancestor_id, descendant_id, depth, sort_order) VALUES (?, ?, 0, ?)",
+                    (task_id, task_id, next_sort_order)
+                )
         
-        # Execute the operations
-        await self.db_manager.execute_transaction(operations)
-        
-        # Get the created task ID
-        rows = await self.db_manager.execute_read(
-            "SELECT id FROM Task WHERE uuid = ?", (task.uuid,)
-        )
-        task_id = rows[0]["id"]
         task.id = task_id
-        
-        # Handle hierarchy if parent specified
-        if parent_id is not None:
-            await self._add_to_hierarchy(task_id, parent_id)
-        else:
-            # Add self-reference for root tasks
-            await self._add_self_reference(task_id)
-        
         logger.info(f"Created task {task_id} with UUID {task.uuid}")
         return task_id
     
@@ -215,8 +245,8 @@ class TaskRepository:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         
         await self.db_manager.execute_write(
-            "UPDATE Task SET deleted_at = ?, status = ? WHERE id = ?",
-            (now, TaskStatus.DELETED.value, task_id)
+            "UPDATE Task SET deleted_at = ?, status = ?, updated_at = ?, revision = revision + 1 WHERE id = ?",
+            (now, TaskStatus.DELETED.value, now, task_id)
         )
         
         # Renormalize sort_order for siblings
@@ -247,8 +277,8 @@ class TaskRepository:
         operations = []
         for tid in all_task_ids:
             operations.append((
-                "UPDATE Task SET deleted_at = ?, status = ? WHERE id = ?",
-                (now, TaskStatus.DELETED.value, tid)
+                "UPDATE Task SET deleted_at = ?, status = ?, updated_at = ?, revision = revision + 1 WHERE id = ?",
+                (now, TaskStatus.DELETED.value, now, tid)
             ))
         
         await self.db_manager.execute_transaction(operations)
@@ -296,9 +326,10 @@ class TaskRepository:
             restore_status: Status to restore to (defaults to PENDING if not provided)
         """
         status = restore_status or TaskStatus.PENDING
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         await self.db_manager.execute_write(
-            "UPDATE Task SET deleted_at = NULL, status = ? WHERE id = ?",
-            (status.value, task_id)
+            "UPDATE Task SET deleted_at = NULL, status = ?, updated_at = ?, revision = revision + 1 WHERE id = ?",
+            (status.value, now, task_id)
         )
         
         logger.info(f"Restored task {task_id} to status {status.value}")
@@ -328,7 +359,16 @@ class TaskRepository:
         Args:
             parent_id: Parent task ID
             child_id: Child task ID to add
+            
+        Raises:
+            ValueError: If the relationship would create a cycle
         """
+        # Guard: prevent cycles in the hierarchy
+        if parent_id == child_id:
+            raise ValueError("Cannot make a task a child of itself")
+        if await self.is_descendant_of(parent_id, child_id):
+            raise ValueError("Cannot make a task a child of one of its own descendants")
+        
         operations = []
         
         # First ensure self-reference exists for child (if not already)
@@ -401,66 +441,77 @@ class TaskRepository:
             if await self.is_descendant_of(new_parent_id, task_id):
                 raise ValueError("Cannot move a task into one of its own descendants")
         
-        # Get all descendants of the task being moved (needed for proper closure table updates)
-        descendants = await self.get_descendants(task_id)
-        descendant_ids = [d.id for d in descendants]
+        # Capture old parent before the move (for sibling renormalization afterwards)
+        old_parent_info = await self.get_parent_info(task_id)
+        old_parent_id = old_parent_info['parent_id'] if old_parent_info else None
         
-        # The subtree being moved includes the task itself and all its descendants
-        # We need to preserve relationships WITHIN the subtree (e.g., task->child, child->grandchild)
-        # but remove relationships FROM external ancestors TO the subtree
-        subtree_ids = [task_id] + descendant_ids
-        
-        # Remove the task itself from old ancestors (except self-reference)
-        await self.db_manager.execute_write(
-            "DELETE FROM TaskClosure WHERE descendant_id = ? AND depth > 0",
-            (task_id,)
-        )
-        
-        # Remove relationships where OLD ancestors (external to subtree) point to descendants
-        # Important: We must include task_id in the exclusion set to preserve internal subtree relationships
-        if descendant_ids:
-            descendant_placeholders = ",".join("?" * len(descendant_ids))
-            subtree_placeholders = ",".join("?" * len(subtree_ids))
-            await self.db_manager.execute_write(
-                f"""
-                DELETE FROM TaskClosure 
-                WHERE descendant_id IN ({descendant_placeholders})
-                AND ancestor_id NOT IN ({subtree_placeholders})
-                AND depth > 0
+        # Perform the whole closure-table move atomically. A failure mid-move
+        # would otherwise leave the subtree detached from any parent.
+        async with self.db_manager.transaction() as conn:
+            # Remove links from ancestors OUTSIDE the subtree to nodes INSIDE
+            # the subtree (the subtree = task itself + all descendants, found
+            # via the task's own closure rows). Internal subtree links and
+            # self-references are preserved.
+            await conn.execute(
+                """
+                DELETE FROM TaskClosure
+                WHERE depth > 0
+                  AND descendant_id IN (SELECT descendant_id FROM TaskClosure WHERE ancestor_id = ?)
+                  AND ancestor_id NOT IN (SELECT descendant_id FROM TaskClosure WHERE ancestor_id = ?)
                 """,
-                tuple(descendant_ids) + tuple(subtree_ids)
+                (task_id, task_id)
             )
-        
-        # Add to new hierarchy
-        if new_parent_id is not None:
-            await self._add_to_hierarchy(task_id, new_parent_id)
             
-            # Re-add the descendants to the new ancestor chain
-            # We need to add relationships from task_id's NEW ancestors to each descendant
-            # Query task_id's ancestors (which now include new_parent, grandparent, etc.)
-            # and create relationships to each descendant with correct depth
-            for desc in descendants:
-                # Get the depth from task_id to this descendant (preserved from before the move)
-                depth_rows = await self.db_manager.execute_read(
-                    "SELECT depth FROM TaskClosure WHERE ancestor_id = ? AND descendant_id = ?",
-                    (task_id, desc.id)
+            if new_parent_id is not None:
+                # Next sort_order among the new parent's children
+                cursor = await conn.execute(
+                    "SELECT COALESCE(MAX(sort_order), 0) + 1 as next_sort_order FROM TaskClosure WHERE ancestor_id = ? AND depth = 1",
+                    (new_parent_id,)
                 )
-                if not depth_rows:
-                    continue  # Skip if relationship not found (shouldn't happen)
+                row = await cursor.fetchone()
+                next_sort_order = row["next_sort_order"] if row else 1
                 
-                desc_depth_from_task = depth_rows[0]["depth"]
-                
-                # Add relationships from all of task_id's NEW ancestors to this descendant
-                # task_id's ancestors are queried via descendant_id = task_id (depth > 0 excludes self-ref)
-                await self.db_manager.execute_write(
+                # Standard closure-table move: connect every ancestor of the new
+                # parent (including its self-reference) to every node in the
+                # moved subtree, in a single set-based statement.
+                await conn.execute(
                     """
-                    INSERT OR IGNORE INTO TaskClosure (ancestor_id, descendant_id, depth, sort_order)
-                    SELECT tc.ancestor_id, ?, tc.depth + ?, 0
-                    FROM TaskClosure tc
-                    WHERE tc.descendant_id = ? AND tc.depth > 0
+                    INSERT INTO TaskClosure (ancestor_id, descendant_id, depth, sort_order)
+                    SELECT supertree.ancestor_id, subtree.descendant_id,
+                           supertree.depth + subtree.depth + 1,
+                           CASE WHEN supertree.depth = 0 AND subtree.depth = 0 THEN ? ELSE 0 END
+                    FROM TaskClosure AS supertree
+                    JOIN TaskClosure AS subtree ON subtree.ancestor_id = ?
+                    WHERE supertree.descendant_id = ?
                     """,
-                    (desc.id, desc_depth_from_task, task_id)
+                    (next_sort_order, task_id, new_parent_id)
                 )
+            else:
+                # Moving to root: give the self-reference the next root sort_order
+                cursor = await conn.execute(
+                    """
+                    SELECT COALESCE(MAX(tc.sort_order), 0) + 1 as next_sort_order
+                    FROM TaskClosure tc
+                    WHERE tc.depth = 0 AND tc.ancestor_id = tc.descendant_id
+                    AND tc.descendant_id != ?
+                    AND NOT EXISTS (
+                        SELECT 1 FROM TaskClosure tc2 
+                        WHERE tc2.descendant_id = tc.descendant_id AND tc2.depth = 1
+                    )
+                    """,
+                    (task_id,)
+                )
+                row = await cursor.fetchone()
+                next_sort_order = row["next_sort_order"] if row else 1
+                
+                await conn.execute(
+                    "UPDATE TaskClosure SET sort_order = ? WHERE ancestor_id = ? AND descendant_id = ? AND depth = 0",
+                    (next_sort_order, task_id, task_id)
+                )
+        
+        # Close the gap left in the old parent's sibling ordering
+        if old_parent_id != new_parent_id:
+            await self._renormalize_sort_order(old_parent_id, exclude_task_id=task_id)
         
         logger.info(f"Moved task {task_id} to parent {new_parent_id}")
     
@@ -510,17 +561,21 @@ class TaskRepository:
             )
         else:
             # Root tasks are those with self-reference (depth=0) but no parent (no depth=1 entry)
+            # Exclude soft-deleted tasks so they don't distort position math
             rows = await self.db_manager.execute_read(
                 """
                 SELECT tc.descendant_id
                 FROM TaskClosure tc
+                JOIN Task t ON t.id = tc.descendant_id
                 WHERE tc.depth = 0 AND tc.ancestor_id = tc.descendant_id
+                AND (t.deleted_at IS NULL OR t.id = ?)
                 AND NOT EXISTS (
                     SELECT 1 FROM TaskClosure tc2 
                     WHERE tc2.descendant_id = tc.descendant_id AND tc2.depth = 1
                 )
                 ORDER BY tc.sort_order
-                """
+                """,
+                (task_id,)
             )
         
         current_children = [row["descendant_id"] for row in rows]
@@ -710,7 +765,8 @@ class TaskRepository:
         """
         if parent_id is not None:
             # Get children of the parent, ordered by current sort_order
-            exclude_clause = f"AND tc.descendant_id != {exclude_task_id}" if exclude_task_id else ""
+            exclude_clause = "AND tc.descendant_id != ?" if exclude_task_id else ""
+            params: tuple = (parent_id, exclude_task_id) if exclude_task_id else (parent_id,)
             rows = await self.db_manager.execute_read(
                 f"""
                 SELECT tc.descendant_id 
@@ -720,7 +776,7 @@ class TaskRepository:
                 AND t.deleted_at IS NULL {exclude_clause}
                 ORDER BY tc.sort_order
                 """,
-                (parent_id,)
+                params
             )
             task_ids = [row["descendant_id"] for row in rows]
             
@@ -729,7 +785,8 @@ class TaskRepository:
                 await self.reorder_tasks(parent_id, task_ids)
         else:
             # Get root tasks, ordered by current sort_order
-            exclude_clause = f"AND tc.descendant_id != {exclude_task_id}" if exclude_task_id else ""
+            exclude_clause = "AND tc.descendant_id != ?" if exclude_task_id else ""
+            params = (exclude_task_id,) if exclude_task_id else ()
             rows = await self.db_manager.execute_read(
                 f"""
                 SELECT tc.descendant_id
@@ -742,7 +799,8 @@ class TaskRepository:
                     WHERE tc2.descendant_id = tc.descendant_id AND tc2.depth = 1
                 )
                 ORDER BY tc.sort_order
-                """
+                """,
+                params
             )
             task_ids = [row["descendant_id"] for row in rows]
             

@@ -53,7 +53,9 @@ class ConnectionManager:
         disconnected = set()
         message_json = json.dumps(message)
         
-        for connection in self.active_connections:
+        # Iterate over a snapshot: awaiting send_text() yields control, and the
+        # set may be mutated by concurrent connect/disconnect coroutines
+        for connection in list(self.active_connections):
             try:
                 if connection.client_state == WebSocketState.CONNECTED:
                     await connection.send_text(message_json)
@@ -87,6 +89,11 @@ class ConnectionManager:
         
         if websocket in self.connection_metadata:
             self.connection_metadata[websocket]["last_ping"] = asyncio.get_event_loop().time()
+    
+    def touch(self, websocket: WebSocket) -> None:
+        """Record activity on a connection so the health check doesn't reap it."""
+        if websocket in self.connection_metadata:
+            self.connection_metadata[websocket]["last_activity"] = asyncio.get_event_loop().time()
     
     async def handle_pong(self, websocket: WebSocket, pong_data: Dict[str, Any]) -> None:
         """Handle a pong response from a client."""
@@ -166,6 +173,9 @@ async def handle_websocket_message(websocket: WebSocket, message: Dict[str, Any]
     """Handle incoming WebSocket messages from clients."""
     message_type = message.get("type")
     
+    # Any inbound message counts as activity for the stale-connection check
+    manager.touch(websocket)
+    
     if message_type == "pong":
         await manager.handle_pong(websocket, message)
         
@@ -211,10 +221,12 @@ async def websocket_health_check():
             current_time = asyncio.get_event_loop().time()
             stale_connections = set()
             
-            for connection, metadata in manager.connection_metadata.items():
+            # Snapshot: the dict can be mutated by concurrent connect/disconnect
+            for connection, metadata in list(manager.connection_metadata.items()):
                 last_activity = max(
                     metadata.get("last_ping", 0),
                     metadata.get("last_pong", 0),
+                    metadata.get("last_activity", 0),
                     metadata.get("connected_at", 0)
                 )
                 

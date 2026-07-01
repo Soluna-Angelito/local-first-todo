@@ -8,10 +8,10 @@ import logging
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from local_first_todo.dependencies import get_undo_redo_service, get_db_write_lock
+from local_first_todo.api.websocket import broadcast_task_update
 from local_first_todo.services.undo_redo_service import (
     UndoRedoService,
     UndoStackEmptyError,
@@ -116,6 +116,12 @@ async def undo_operation(
         try:
             result = await undo_service.undo()
             
+            # Notify connected clients so other tabs refresh their state
+            await broadcast_task_update("undo", {
+                "entry_id": result["entry_id"],
+                "operations_applied": len(result["operations_applied"])
+            })
+            
             return UndoRedoResponse(
                 operation=result["operation"],
                 entry_id=result["entry_id"],
@@ -174,6 +180,12 @@ async def redo_operation(
     async with db_write_lock:
         try:
             result = await undo_service.redo()
+            
+            # Notify connected clients so other tabs refresh their state
+            await broadcast_task_update("redo", {
+                "entry_id": result["entry_id"],
+                "operations_applied": len(result["operations_applied"])
+            })
             
             return UndoRedoResponse(
                 operation=result["operation"],

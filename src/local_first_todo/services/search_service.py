@@ -9,7 +9,7 @@ This module provides comprehensive search functionality including:
 
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any
 from enum import Enum
 
 from local_first_todo.database.manager import DatabaseManager
@@ -79,6 +79,44 @@ class SearchFilters:
         self.overdue_only = overdue_only
         self.today_only = today_only
         self.upcoming_days = upcoming_days
+
+
+def prepare_fts_query(query: str) -> str:
+    """Prepare a raw user query for FTS5 search.
+    
+    Escapes FTS5 syntax characters and adds prefix matching for the last
+    term so raw user input cannot produce FTS5 syntax errors.
+    
+    Args:
+        query: Raw search query
+        
+    Returns:
+        FTS5-formatted query string (empty if nothing searchable remains)
+    """
+    words = query.strip().split()
+    if not words:
+        return ""
+    
+    # Escape FTS5 special characters
+    escaped_words = []
+    for word in words:
+        # Remove non-alphanumeric characters except hyphens and underscores
+        clean_word = ''.join(c for c in word if c.isalnum() or c in '-_')
+        if clean_word:
+            escaped_words.append(f'"{clean_word}"')
+    
+    if not escaped_words:
+        return ""
+    
+    # Add prefix matching for the last word to support autocomplete
+    if len(escaped_words) == 1:
+        # Single word - try both exact match and prefix
+        word = escaped_words[0].strip('"')
+        return f'{escaped_words[0]} OR {word}*'
+    
+    # Multiple words - exact match for all but last, prefix for last
+    last_word = escaped_words[-1].strip('"')
+    return f'{" AND ".join(escaped_words[:-1])} AND ({escaped_words[-1]} OR {last_word}*)'
 
 
 class SearchService:
@@ -333,44 +371,45 @@ class SearchService:
             Dictionary with search statistics
         """
         try:
-            # Total tasks by status
-            status_counts = {}
-            for status in TaskStatus:
-                count_result = await self.db_manager.execute_read(
-                    "SELECT COUNT(*) as count FROM Task WHERE status = ? AND deleted_at IS NULL",
-                    (status.value,)
-                )
-                status_counts[status.value] = count_result[0]["count"] if count_result else 0
-            
-            # Tasks with due dates
-            due_date_count = await self.db_manager.execute_read(
-                "SELECT COUNT(*) as count FROM Task WHERE next_due_utc IS NOT NULL AND deleted_at IS NULL"
-            )
-            
-            # Overdue tasks
             now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            overdue_count = await self.db_manager.execute_read(
+            
+            # Single aggregation pass instead of one query per status/priority
+            rows = await self.db_manager.execute_read(
                 """
-                SELECT COUNT(*) as count FROM Task 
-                WHERE next_due_utc < ? AND status IN ('pending', 'in_progress') AND deleted_at IS NULL
+                SELECT
+                    status,
+                    priority,
+                    COUNT(*) as count,
+                    SUM(CASE WHEN next_due_utc IS NOT NULL THEN 1 ELSE 0 END) as with_due_date,
+                    SUM(
+                        CASE WHEN next_due_utc < ? AND status IN ('pending', 'in_progress')
+                        THEN 1 ELSE 0 END
+                    ) as overdue
+                FROM Task
+                WHERE deleted_at IS NULL
+                GROUP BY status, priority
                 """,
                 (now_str,)
             )
             
-            # Priority distribution
-            priority_counts = {}
-            for priority in range(1, 6):
-                priority_result = await self.db_manager.execute_read(
-                    "SELECT COUNT(*) as count FROM Task WHERE priority = ? AND deleted_at IS NULL",
-                    (priority,)
-                )
-                priority_counts[priority] = priority_result[0]["count"] if priority_result else 0
+            status_counts = {status.value: 0 for status in TaskStatus}
+            priority_counts = {priority: 0 for priority in range(1, 6)}
+            tasks_with_due_dates = 0
+            overdue_tasks = 0
+            
+            for row in rows:
+                if row["status"] in status_counts:
+                    status_counts[row["status"]] += row["count"]
+                if row["priority"] in priority_counts:
+                    priority_counts[row["priority"]] += row["count"]
+                tasks_with_due_dates += row["with_due_date"] or 0
+                overdue_tasks += row["overdue"] or 0
             
             return {
                 "total_tasks": sum(status_counts.values()),
                 "status_counts": status_counts,
-                "tasks_with_due_dates": due_date_count[0]["count"] if due_date_count else 0,
-                "overdue_tasks": overdue_count[0]["count"] if overdue_count else 0,
+                "tasks_with_due_dates": tasks_with_due_dates,
+                "overdue_tasks": overdue_tasks,
                 "priority_counts": priority_counts
             }
             
@@ -387,32 +426,7 @@ class SearchService:
         Returns:
             FTS5-formatted query string
         """
-        # Clean and prepare the query for FTS5
-        # Handle special characters and add prefix matching for last term
-        words = query.strip().split()
-        if not words:
-            return ""
-        
-        # Escape FTS5 special characters
-        escaped_words = []
-        for word in words:
-            # Remove non-alphanumeric characters except hyphens and underscores
-            clean_word = ''.join(c for c in word if c.isalnum() or c in '-_')
-            if clean_word:
-                escaped_words.append(f'"{clean_word}"')
-        
-        if escaped_words:
-            # Add prefix matching for the last word to support autocomplete
-            if len(escaped_words) == 1:
-                # Single word - try both exact match and prefix
-                word = escaped_words[0].strip('"')
-                return f'{escaped_words[0]} OR {word}*'
-            else:
-                # Multiple words - exact match for all but last, prefix for last
-                last_word = escaped_words[-1].strip('"')
-                return f'{" AND ".join(escaped_words[:-1])} AND ({escaped_words[-1]} OR {last_word}*)'
-        
-        return query
+        return prepare_fts_query(query)
     
     def _build_filter_conditions(self, filters: SearchFilters, params: List[Any]) -> List[str]:
         """Build WHERE conditions for filters.

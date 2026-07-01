@@ -23,6 +23,10 @@ call .venv\Scripts\activate.bat
 REM Ensure src-layout package imports work (local_first_todo is under .\src)
 set PYTHONPATH=%CD%\src;%PYTHONPATH%
 
+REM Force UTF-8 output: conftest.py prints unicode symbols that crash
+REM under legacy console codepages (e.g. cp949 on Korean Windows)
+set PYTHONUTF8=1
+
 echo  Select test suite:
 echo.
 echo    [1] Run All Phase Tests (Phases 1-9)

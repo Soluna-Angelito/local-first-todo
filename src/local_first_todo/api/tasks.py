@@ -208,6 +208,7 @@ class TaskReorderRequest(BaseModel):
     """Request model for reordering tasks within a parent container."""
     task_ids: List[int] = Field(
         ..., 
+        min_length=1,
         description="Array of task IDs in the desired display order",
         json_schema_extra={"example": [5, 3, 8, 1, 2]}
     )
@@ -217,6 +218,14 @@ class TaskReorderRequest(BaseModel):
             "examples": [{"task_ids": [5, 3, 8, 1, 2]}]
         }
     }
+    
+    @field_validator('task_ids')
+    @classmethod
+    def validate_no_duplicates(cls, v: List[int]) -> List[int]:
+        """Reject duplicate IDs which would produce conflicting sort orders."""
+        if len(set(v)) != len(v):
+            raise ValueError("task_ids must not contain duplicates")
+        return v
 
 
 class TaskMoveRequest(BaseModel):
@@ -896,6 +905,15 @@ async def create_task(task_data: TaskCreate) -> TaskResponse:
     
     async with db_write_lock:
         try:
+            # Validate parent exists (and is not soft-deleted) before creating
+            if task_data.parent_id is not None:
+                parent_task = await task_repository.get_task_by_id(task_data.parent_id)
+                if not parent_task:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Parent task with ID {task_data.parent_id} not found"
+                    )
+            
             # Create Task object
             task = Task(
                 title=task_data.title,
@@ -1097,6 +1115,14 @@ async def delete_task(
                         hierarchy_info_before=task_hierarchy
                     )
                 logger.info(f"Soft deleted task {task_id} and {deleted_count - 1} descendants")
+            
+            # Broadcast deletion so other connected clients stay in sync
+            await broadcast_task_update("deleted", {
+                "id": task_id,
+                "uuid": existing_task.uuid,
+                "hard_delete": hard_delete,
+                "descendant_ids": [d.id for d in descendants]
+            })
                 
         except HTTPException:
             raise
@@ -1213,7 +1239,6 @@ async def restore_task(task_id: int) -> TaskResponse:
                     detail=f"Task with ID {task_id} not found"
                 )
             
-            from copy import deepcopy
             task_before = task_repository._row_to_task(rows[0])
             
             # Get hierarchy info (should still exist for soft-deleted tasks)
@@ -1235,6 +1260,14 @@ async def restore_task(task_id: int) -> TaskResponse:
                 hierarchy_info_before=hierarchy_info,
                 hierarchy_info_after=hierarchy_info
             )
+            
+            # Broadcast restoration so other connected clients stay in sync
+            await broadcast_task_update("restored", {
+                "id": restored_task.id,
+                "uuid": restored_task.uuid,
+                "title": restored_task.title,
+                "status": restored_task.status.value
+            })
             
             logger.info(f"Restored task {task_id}")
             return task_to_response(restored_task)
@@ -1431,8 +1464,15 @@ async def search_tasks(query: str) -> List[TaskResponse]:
                 detail="Search query cannot be empty"
             )
         
+        # Sanitize the raw query for FTS5: unescaped syntax characters
+        # (quotes, *, NEAR, etc.) would otherwise cause SQL errors (500s)
+        from local_first_todo.services.search_service import prepare_fts_query
+        fts_query = prepare_fts_query(query)
+        if not fts_query:
+            return []
+        
         task_repository = get_task_repository()
-        tasks = await task_repository.search_tasks(query)
+        tasks = await task_repository.search_tasks(fts_query)
         return [task_to_response(task) for task in tasks]
     except HTTPException:
         raise

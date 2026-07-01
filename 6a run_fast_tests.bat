@@ -16,6 +16,10 @@ if not exist ".venv\Scripts\activate.bat" (
 
 call .venv\Scripts\activate.bat
 set PYTHONPATH=%CD%\src;%PYTHONPATH%
+
+REM Force UTF-8 output: conftest.py prints unicode symbols that crash
+REM under legacy console codepages (e.g. cp949 on Korean Windows)
+set PYTHONUTF8=1
 set VERBOSE_TESTS=0
 
 echo  [MODE] Fast tests only (skipping slow)

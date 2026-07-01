@@ -41,7 +41,6 @@ import uuid
 from pathlib import Path
 from typing import BinaryIO, Optional, Tuple, List, Dict, Any
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 from local_first_todo.database.models import Blob, Attachment
 from local_first_todo.database.manager import DatabaseManager
@@ -297,17 +296,17 @@ class AttachmentService:
         Returns:
             Disk quota information
         """
-        # Get disk space information
-        stat = shutil.disk_usage(self.attachments_dir)
-        total_space = stat.total
-        available_space = stat.free
+        # Disk scan is blocking I/O; run it off the event loop
+        def _scan_disk() -> Tuple[int, int, int]:
+            stat = shutil.disk_usage(self.attachments_dir)
+            used = sum(
+                f.stat().st_size 
+                for f in self.attachments_dir.rglob('*') 
+                if f.is_file()
+            )
+            return stat.total, stat.free, used
         
-        # Calculate space used by attachments
-        used_by_attachments = sum(
-            f.stat().st_size 
-            for f in self.attachments_dir.rglob('*') 
-            if f.is_file()
-        )
+        total_space, available_space, used_by_attachments = await asyncio.to_thread(_scan_disk)
         
         # Calculate remaining quota (max attachment size minus what's already used)
         remaining_quota = max(0, self.max_attachment_size - used_by_attachments)
@@ -365,13 +364,24 @@ class AttachmentService:
             temp_file = self.attachments_dir / f"temp_{uuid.uuid4().hex}"
             
             try:
-                # Write file data to temporary location
-                with open(temp_file, 'wb') as f:
-                    while chunk := file_data.read(8192):
-                        f.write(chunk)
+                # Write file data to temporary location off the event loop,
+                # aborting early if the single-file size limit is exceeded
+                # (avoids buffering arbitrarily large uploads to disk first)
+                max_size = self.max_attachment_size
                 
-                # Check file size
-                file_size = temp_file.stat().st_size
+                def _write_temp_file() -> int:
+                    bytes_written = 0
+                    with open(temp_file, 'wb') as f:
+                        while chunk := file_data.read(8192):
+                            bytes_written += len(chunk)
+                            if bytes_written > max_size:
+                                raise DiskQuotaExceededError(
+                                    f"Upload exceeds maximum file size of {max_size} bytes"
+                                )
+                            f.write(chunk)
+                    return bytes_written
+                
+                file_size = await asyncio.to_thread(_write_temp_file)
                 
                 quota_info = await self.check_disk_quota(file_size)
                 if not quota_info.can_upload:
@@ -391,20 +401,23 @@ class AttachmentService:
                 was_deduplicated = existing_blob is not None
                 
                 if not existing_blob:
-                    # Create new blob record
+                    # Move file to content-addressable location FIRST, then create
+                    # the blob record; the reverse order could leave a DB row
+                    # referencing a file that was never persisted
+                    final_path = self.attachments_dir / file_hash
+                    # replace() overwrites atomically; rename() would raise on
+                    # Windows if a leftover file with this hash already exists
+                    temp_file.replace(final_path)
+                    
+                    # Set secure permissions
+                    if os.name == 'posix':
+                        final_path.chmod(0o644)
+                    
                     blob = Blob(
                         sha256=file_hash,
                         size_bytes=actual_size
                     )
                     await self._create_blob(blob)
-                    
-                    # Move file to content-addressable location
-                    final_path = self.attachments_dir / file_hash
-                    temp_file.rename(final_path)
-                    
-                    # Set secure permissions
-                    if os.name == 'posix':
-                        final_path.chmod(0o644)
                 else:
                     blob = existing_blob
                     final_path = self.attachments_dir / file_hash

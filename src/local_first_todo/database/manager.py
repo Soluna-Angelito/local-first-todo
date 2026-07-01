@@ -9,8 +9,9 @@ This module provides the DatabaseManager class which handles:
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional, Any, Dict, List
+from typing import Optional, Any, AsyncIterator, Dict, List
 
 import aiosqlite
 
@@ -21,7 +22,6 @@ from local_first_todo.database.schema import (
     FTS_TRIGGERS,
     SCHEMA_MIGRATIONS,
 )
-from local_first_todo.database.models import Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,12 @@ class DatabaseManager:
         """
         self.db_path = Path(db_path)
         self._write_lock = asyncio.Lock()
+        # Persistent connections (lazily created). WAL mode allows the read
+        # connection to see commits from the write connection, while avoiding
+        # the per-operation cost of opening a connection and re-applying pragmas.
+        self._read_conn: Optional[aiosqlite.Connection] = None
+        self._write_conn: Optional[aiosqlite.Connection] = None
+        self._conn_init_lock = asyncio.Lock()
         
     async def initialize(self) -> None:
         """Initialize the database, creating schema if needed."""
@@ -146,27 +152,53 @@ class DatabaseManager:
             await conn.execute(f"PRAGMA user_version = {to_version}")
             await conn.commit()
             
-            logger.info(f"Database migration completed successfully")
+            logger.info("Database migration completed successfully")
             
         except Exception as e:
             await conn.rollback()
             logger.error(f"Database migration failed: {e}")
             raise
     
-    async def get_connection(self) -> aiosqlite.Connection:
-        """Get a database connection with proper configuration."""
+    async def _open_connection(self) -> aiosqlite.Connection:
+        """Open a new configured connection."""
         conn = await aiosqlite.connect(self.db_path)
         await self._apply_pragmas(conn)
+        conn.row_factory = aiosqlite.Row
         return conn
+    
+    async def _get_read_conn(self) -> aiosqlite.Connection:
+        """Get the persistent read connection, creating it if needed.
+        
+        Safe for concurrent use: aiosqlite serializes commands through a
+        single worker thread, and each execute() gets its own cursor.
+        """
+        if self._read_conn is None:
+            async with self._conn_init_lock:
+                if self._read_conn is None:
+                    self._read_conn = await self._open_connection()
+        return self._read_conn
+    
+    async def _get_write_conn(self) -> aiosqlite.Connection:
+        """Get the persistent write connection (call under _write_lock)."""
+        if self._write_conn is None:
+            self._write_conn = await self._open_connection()
+        return self._write_conn
+    
+    async def get_connection(self) -> aiosqlite.Connection:
+        """Get a new database connection with proper configuration.
+        
+        Caller owns the connection and must close it.
+        """
+        return await self._open_connection()
     
     async def execute_read(self, query: str, params: Optional[tuple] = None) -> List[aiosqlite.Row]:
         """Execute a read-only query and return all results."""
-        async with aiosqlite.connect(self.db_path) as conn:
-            await self._apply_pragmas(conn)
-            conn.row_factory = aiosqlite.Row
-            
-            cursor = await conn.execute(query, params or ())
+        conn = await self._get_read_conn()
+        cursor = await conn.execute(query, params or ())
+        try:
             return await cursor.fetchall()
+        finally:
+            await cursor.close()
     
     async def execute_write(
         self, 
@@ -175,77 +207,91 @@ class DatabaseManager:
     ) -> aiosqlite.Cursor:
         """Execute a write query with proper locking."""
         async with self._write_lock:
-            async with aiosqlite.connect(self.db_path) as conn:
-                await self._apply_pragmas(conn)
-                
+            conn = await self._get_write_conn()
+            try:
                 cursor = await conn.execute(query, params or ())
                 await conn.commit()
                 return cursor
+            except Exception:
+                await conn.rollback()
+                raise
     
     async def execute_transaction(self, operations: List[tuple[str, tuple]]) -> None:
         """Execute multiple operations in a single transaction."""
         async with self._write_lock:
-            async with aiosqlite.connect(self.db_path) as conn:
-                await self._apply_pragmas(conn)
-                
-                try:
-                    for query, params in operations:
-                        await conn.execute(query, params)
-                    await conn.commit()
-                except Exception:
-                    await conn.rollback()
-                    raise
+            conn = await self._get_write_conn()
+            try:
+                for query, params in operations:
+                    await conn.execute(query, params)
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+    
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Open a connection that commits on success and rolls back on error.
+        
+        Unlike execute_transaction, this allows interleaving reads and writes
+        (e.g. reading lastrowid or computing sort orders) atomically.
+        """
+        async with self._write_lock:
+            conn = await self._get_write_conn()
+            try:
+                yield conn
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
     
     async def verify_schema_integrity(self) -> Dict[str, Any]:
         """Verify database schema integrity and return status."""
-        async with aiosqlite.connect(self.db_path) as conn:
-            await self._apply_pragmas(conn)
-            
-            # Check PRAGMA integrity
-            cursor = await conn.execute("PRAGMA integrity_check")
-            integrity_result = await cursor.fetchone()
-            
-            # Check foreign key integrity
-            cursor = await conn.execute("PRAGMA foreign_key_check")
-            fk_violations = await cursor.fetchall()
-            
-            # Check schema version
-            cursor = await conn.execute("PRAGMA user_version")
-            version_row = await cursor.fetchone()
-            current_version = version_row[0] if version_row else 0
-            
-            # Check if tables exist
-            cursor = await conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        conn = await self._get_read_conn()
+        
+        # Check PRAGMA integrity
+        cursor = await conn.execute("PRAGMA integrity_check")
+        integrity_result = await cursor.fetchone()
+        
+        # Check foreign key integrity
+        cursor = await conn.execute("PRAGMA foreign_key_check")
+        fk_violations = await cursor.fetchall()
+        
+        # Check schema version
+        cursor = await conn.execute("PRAGMA user_version")
+        version_row = await cursor.fetchone()
+        current_version = version_row[0] if version_row else 0
+        
+        # Check if tables exist
+        cursor = await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        )
+        tables = [row[0] for row in await cursor.fetchall()]
+        
+        expected_tables = {'Task', 'TaskClosure', 'Blob', 'Attachment', 'UndoLog', 'TaskFTS'}
+        missing_tables = expected_tables - set(tables)
+        
+        return {
+            "integrity_check": integrity_result[0] if integrity_result else "Unknown",
+            "foreign_key_violations": len(fk_violations),
+            "schema_version": current_version,
+            "expected_version": SCHEMA_VERSION,
+            "tables_present": tables,
+            "missing_tables": list(missing_tables),
+            "is_healthy": (
+                integrity_result and integrity_result[0] == "ok" and
+                len(fk_violations) == 0 and
+                current_version == SCHEMA_VERSION and
+                len(missing_tables) == 0
             )
-            tables = [row[0] for row in await cursor.fetchall()]
-            
-            expected_tables = {'Task', 'TaskClosure', 'Blob', 'Attachment', 'UndoLog', 'TaskFTS'}
-            missing_tables = expected_tables - set(tables)
-            
-            return {
-                "integrity_check": integrity_result[0] if integrity_result else "Unknown",
-                "foreign_key_violations": len(fk_violations),
-                "schema_version": current_version,
-                "expected_version": SCHEMA_VERSION,
-                "tables_present": tables,
-                "missing_tables": list(missing_tables),
-                "is_healthy": (
-                    integrity_result and integrity_result[0] == "ok" and
-                    len(fk_violations) == 0 and
-                    current_version == SCHEMA_VERSION and
-                    len(missing_tables) == 0
-                )
-            }
+        }
     
     async def truncate_wal(self) -> None:
         """Truncate the WAL file to manage growth."""
         async with self._write_lock:
-            async with aiosqlite.connect(self.db_path) as conn:
-                await self._apply_pragmas(conn)
-                await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                await conn.commit()
-                logger.debug("WAL file truncated")
+            conn = await self._get_write_conn()
+            await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            await conn.commit()
+            logger.debug("WAL file truncated")
     
     async def close(self) -> None:
         """Close database connections and clean up resources."""
@@ -255,4 +301,15 @@ class DatabaseManager:
         except Exception as e:
             logger.warning(f"Failed to truncate WAL on close: {e}")
         
-        logger.info("Database manager closed") 
+        # Close persistent connections so file handles are released
+        # (important on Windows, where open handles block file deletion).
+        for attr in ("_read_conn", "_write_conn"):
+            conn = getattr(self, attr)
+            if conn is not None:
+                try:
+                    await conn.close()
+                except Exception as e:
+                    logger.warning(f"Failed to close {attr}: {e}")
+                setattr(self, attr, None)
+        
+        logger.info("Database manager closed")

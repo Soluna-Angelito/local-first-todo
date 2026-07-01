@@ -7,10 +7,10 @@ using JSON-Patch (RFC 6902) operations as specified in the SDD.
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 from local_first_todo.database.manager import DatabaseManager
-from local_first_todo.database.models import Task, TaskStatus, UndoLogEntry, UndoLogStatus
+from local_first_todo.database.models import Task, UndoLogEntry, UndoLogStatus
 
 logger = logging.getLogger(__name__)
 
@@ -604,6 +604,8 @@ class UndoRedoService:
         stats = await self._get_undo_log_stats()
         
         # Check entry count limit
+        # Only truncate APPLIED entries: PENDING entries form the redo chain
+        # and deleting them would silently destroy redo history
         if stats["total_entries"] > self.max_undo_entries:
             entries_to_remove = stats["total_entries"] - self.max_undo_entries
             await self.db_manager.execute_write(
@@ -611,6 +613,7 @@ class UndoRedoService:
                 DELETE FROM UndoLog 
                 WHERE id IN (
                     SELECT id FROM UndoLog 
+                    WHERE status = 'APPLIED'
                     ORDER BY id ASC 
                     LIMIT ?
                 )
@@ -630,6 +633,7 @@ class UndoRedoService:
                 DELETE FROM UndoLog 
                 WHERE id IN (
                     SELECT id FROM UndoLog 
+                    WHERE status = 'APPLIED'
                     ORDER BY id ASC 
                     LIMIT (
                         SELECT MAX(1, COUNT(*) / 4) FROM UndoLog

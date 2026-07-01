@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
@@ -218,7 +217,7 @@ Errors follow [RFC 7807](https://tools.ietf.org/html/rfc7807) Problem Details fo
             db_status = "not_connected"
         
         return {
-            "status": "healthy",
+            "status": "healthy" if db_status == "connected" else "degraded",
             "version": __version__,
             "database": db_status
         }

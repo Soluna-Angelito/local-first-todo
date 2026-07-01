@@ -9,9 +9,9 @@ This module provides REST API endpoints for:
 """
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 

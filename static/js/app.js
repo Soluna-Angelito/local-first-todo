@@ -8,7 +8,8 @@
 // Configuration & Constants
 // ============================================
 const API_BASE = '/api/v1';
-const WS_URL = `ws://${window.location.host}/api/v1/ws`;
+// Use wss:// when the page is served over HTTPS (e.g. behind a reverse proxy)
+const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/api/v1/ws`;
 
 const STATUS_LABELS = {
   active: 'Active',
@@ -188,6 +189,15 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+/**
+ * Initialize Lucide icons, scoped to a container when provided.
+ * Scoping avoids rescanning the entire document on every partial render.
+ */
+function refreshIcons(root) {
+  if (typeof lucide === 'undefined') return;
+  lucide.createIcons(root ? { root } : undefined);
 }
 
 // ============================================
@@ -424,7 +434,11 @@ async function apiRequest(endpoint, options = {}) {
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: response.statusText }));
-      throw new Error(error.detail || 'Request failed');
+      // FastAPI may return detail as an RFC 7807-style object; avoid "[object Object]"
+      const detail = typeof error.detail === 'string'
+        ? error.detail
+        : error.detail?.detail || error.detail?.title || 'Request failed';
+      throw new Error(detail);
     }
 
     if (response.status === 204) {
@@ -536,8 +550,12 @@ async function fetchUndoStatus() {
 // ============================================
 // WebSocket Connection
 // ============================================
+let wsReconnectAttempts = 0;
+let wsReconnectTimer = null;
+
 function connectWebSocket() {
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+  // Guard against duplicate sockets: skip if one is already open or connecting
+  if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) {
     return;
   }
 
@@ -546,6 +564,7 @@ function connectWebSocket() {
   state.ws.onopen = () => {
     console.log('🔌 WebSocket connected');
     state.wsConnected = true;
+    wsReconnectAttempts = 0;
     updateConnectionStatus(true);
   };
 
@@ -554,8 +573,11 @@ function connectWebSocket() {
     state.wsConnected = false;
     updateConnectionStatus(false);
 
-    // Reconnect after 3 seconds
-    setTimeout(connectWebSocket, 3000);
+    // Reconnect with exponential backoff (3s, 6s, 12s, ... capped at 30s)
+    const delay = Math.min(3000 * Math.pow(2, wsReconnectAttempts), 30000);
+    wsReconnectAttempts++;
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = setTimeout(connectWebSocket, delay);
   };
 
   state.ws.onerror = (error) => {
@@ -586,6 +608,11 @@ function handleWebSocketMessage(message) {
       handleTaskUpdate(message.event, message.data);
       break;
 
+    case 'reset_needed':
+      // Server says our state is too stale - do a full resync
+      loadTasks();
+      break;
+
     default:
       console.log('WebSocket message:', message);
   }
@@ -611,14 +638,18 @@ function handleTaskUpdate(event, data) {
       break;
 
     case 'deleted':
+      // Full reload: descendants and parent childIds must be updated too,
+      // and a partial Map removal would leave the tree inconsistent
       if (state.tasks.has(data.id)) {
-        state.tasks.delete(data.id);
-        renderTaskTree();
+        loadTasks();
       }
       break;
 
+    case 'restored':
     case 'moved':
     case 'reordered':
+    case 'undo':
+    case 'redo':
       loadTasks();
       break;
   }
@@ -634,7 +665,7 @@ function updateConnectionStatus(connected) {
     statusEl.innerHTML = connected
       ? '<i data-lucide="wifi"></i>'
       : '<i data-lucide="wifi-off"></i>';
-    lucide.createIcons();
+    refreshIcons(statusEl);
   }
 }
 
@@ -857,10 +888,14 @@ function renderTaskTree() {
           return true;
         }
 
-        // Check children recursively
+        // Check children recursively. When search is active, only consider
+        // search-visible descendants: an uncompleted child that is hidden by
+        // the search must not keep its completed ancestor visible (it would
+        // render as a dangling parent with no visible children).
         let result = false;
         if (task.childIds && task.childIds.length > 0) {
           for (const childId of task.childIds) {
+            if (searchVisibleIds && !searchVisibleIds.has(childId)) continue;
             if (hasUncompletedInSubtree(childId)) {
               result = true;
               break;
@@ -960,8 +995,8 @@ function renderTaskTree() {
     }
   });
 
-  // Initialize Lucide icons
-  lucide.createIcons();
+  // Initialize Lucide icons (scoped to the tree container)
+  refreshIcons(container);
 
   // Scroll to newly created task if exists
   if (state.lastCreatedTaskId) {
@@ -1425,6 +1460,7 @@ async function handleDrop(e, targetId) {
   }
 
   try {
+    state.isLocalAction = true;
     const { position } = state.dropTarget;
 
     if (position === 'inside') {
@@ -1449,6 +1485,8 @@ async function handleDrop(e, targetId) {
 
   } catch (error) {
     showToast('Failed to move task', 'error');
+  } finally {
+    setTimeout(() => { state.isLocalAction = false; }, 500);
   }
 }
 
@@ -1509,10 +1547,12 @@ function initializeMarked() {
     // Sanitize links to prevent javascript: URLs
     // Note: marked.js passes an object { href, title, text, tokens }, use destructuring
     link({ href, title, text }) {
-      // Block javascript: and data: URLs
-      if (href && (href.toLowerCase().startsWith('javascript:') ||
-        href.toLowerCase().startsWith('data:'))) {
-        return text;
+      // Block dangerous URL schemes
+      const lowerHref = (href || '').toLowerCase().trim();
+      if (lowerHref.startsWith('javascript:') ||
+        lowerHref.startsWith('vbscript:') ||
+        lowerHref.startsWith('data:')) {
+        return escapeHtml(text);
       }
       const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
       return `<a href="${escapeHtml(href)}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
@@ -1520,9 +1560,14 @@ function initializeMarked() {
     // Sanitize images
     // Note: marked.js passes an object { href, title, text }, use destructuring
     image({ href, title, text }) {
-      // Block javascript: and data: URLs (except data:image)
-      if (href && href.toLowerCase().startsWith('javascript:')) {
-        return text;
+      // Block dangerous URL schemes. data: URIs are only allowed for safe
+      // raster image types - data:image/svg+xml can carry embedded scripts
+      const lowerHref = (href || '').toLowerCase().trim();
+      const isSafeDataUri = /^data:image\/(png|jpe?g|gif|webp);/.test(lowerHref);
+      if (lowerHref.startsWith('javascript:') ||
+        lowerHref.startsWith('vbscript:') ||
+        (lowerHref.startsWith('data:') && !isSafeDataUri)) {
+        return escapeHtml(text);
       }
       const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
       const altAttr = text ? ` alt="${escapeHtml(text)}"` : '';
@@ -1975,7 +2020,7 @@ function toggleDescriptionMode() {
     textarea.focus();
   }
 
-  lucide.createIcons();
+  refreshIcons(toggleBtn);
 }
 
 /**
@@ -2016,7 +2061,7 @@ function setDescriptionMode(mode) {
     toggleLabel.textContent = 'View';
   }
 
-  lucide.createIcons();
+  refreshIcons(toggleBtn);
 }
 
 /**
@@ -2134,7 +2179,7 @@ function openCreateTaskModal(parentId = null) {
 
   // Show modal
   modal.style.display = 'flex';
-  lucide.createIcons();
+  refreshIcons(modal);
 
   // Store original values for dirty checking (after setting defaults)
   setTimeout(() => storeOriginalModalValues(), 0);
@@ -2206,7 +2251,7 @@ function openTaskModal(taskId) {
 
   // Show modal with animation
   modal.style.display = 'flex';
-  lucide.createIcons();
+  refreshIcons(modal);
 
   // Store original values for dirty checking (after setting values)
   setTimeout(() => storeOriginalModalValues(), 0);
@@ -2405,7 +2450,7 @@ function renderModalSubtasks(taskId) {
     });
   });
 
-  lucide.createIcons();
+  refreshIcons(container);
 }
 
 async function loadModalAttachments(taskId) {
@@ -2467,7 +2512,7 @@ async function loadModalAttachments(taskId) {
       });
     });
 
-    lucide.createIcons();
+    refreshIcons(container);
 
   } catch (error) {
     container.innerHTML = '<div class="attachments-empty">Failed to load attachments</div>';
@@ -2764,9 +2809,15 @@ function handleGlobalKeydown(e) {
       break;
 
     case 'z':
+    case 'Z':
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
-        handleUndo();
+        // Shift+Ctrl/Cmd+Z = redo (standard on macOS), plain = undo
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
       }
       break;
 
@@ -3220,11 +3271,14 @@ async function handleUndo() {
   if (!state.undoEnabled) return;
 
   try {
+    state.isLocalAction = true;
     await performUndo();
     await loadTasks();
     showToast('Undone', 'success');
   } catch (error) {
     showToast('Nothing to undo', 'info');
+  } finally {
+    setTimeout(() => { state.isLocalAction = false; }, 500);
   }
 }
 
@@ -3232,11 +3286,14 @@ async function handleRedo() {
   if (!state.redoEnabled) return;
 
   try {
+    state.isLocalAction = true;
     await performRedo();
     await loadTasks();
     showToast('Redone', 'success');
   } catch (error) {
     showToast('Nothing to redo', 'info');
+  } finally {
+    setTimeout(() => { state.isLocalAction = false; }, 500);
   }
 }
 
@@ -3295,7 +3352,7 @@ function showConfirm({
     modal.style.display = 'flex';
     modal.classList.remove('closing');
     confirmModalOpenedAt = Date.now();
-    lucide.createIcons();
+    refreshIcons(modal);
 
     // Focus the cancel button (safer default)
     setTimeout(() => cancelBtn.focus(), 50);
@@ -3383,7 +3440,7 @@ function showToast(message, type = 'info') {
   `;
 
   container.appendChild(toast);
-  lucide.createIcons();
+  refreshIcons(toast);
 
   // Close button
   toast.querySelector('.toast-close').addEventListener('click', () => {
@@ -3488,10 +3545,10 @@ function setupEventListeners() {
   // Add task button - opens full create modal
   document.getElementById('add-task-btn')?.addEventListener('click', () => openCreateTaskModal());
 
-  // Task modal - X button and Cancel button close immediately without confirmation
-  // (Confirmation only for Esc key and clicking outside)
-  document.getElementById('modal-close')?.addEventListener('click', closeTaskModal);
-  document.getElementById('modal-cancel')?.addEventListener('click', closeTaskModal);
+  // Task modal - X and Cancel go through the unsaved-changes guard, same as
+  // Esc and clicking outside (only prompts when the form is actually dirty)
+  document.getElementById('modal-close')?.addEventListener('click', () => tryCloseTaskModal());
+  document.getElementById('modal-cancel')?.addEventListener('click', () => tryCloseTaskModal());
   document.getElementById('modal-save')?.addEventListener('click', saveTaskModal);
   document.getElementById('modal-delete')?.addEventListener('click', deleteTaskFromModal);
 
@@ -3512,7 +3569,7 @@ function setupEventListeners() {
     const isCompleted = statusSelect.value === 'completed';
     btn.classList.toggle('checked', isCompleted);
     btn.innerHTML = `<i data-lucide="${isCompleted ? 'check-circle-2' : 'circle'}"></i>`;
-    lucide.createIcons();
+    refreshIcons(btn);
   });
 
   document.getElementById('add-subtask-btn')?.addEventListener('click', () => {
